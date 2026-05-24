@@ -5,11 +5,17 @@
 
 #include "rom_chip.h"
 
-static const volatile uint32_t *ADDR_DOWNLOAD_FROM_FLASH = (uint32_t *)0x40;
-static const volatile uint32_t *ADDR_OTPI_POWER = (uint32_t *)0x4C;
-static const volatile uint32_t *ADDR_OTPI_READ = (uint32_t *)0x50;
-static const volatile uint32_t *ADDR_OTPI_WRITE = (uint32_t *)0x54;
-static const volatile uint32_t *ADDR_OTPI_WRITE_PROTECT = (uint32_t *)0x5C;
+/* GCC 12+ incorrectly triggers -Warray-bounds when dereferencing
+ * fixed low addresses used for the NPCX ROM function table. These
+ * are valid entries in the NPCX ROM API table, not array accesses. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+
+static const volatile uint32_t* ADDR_DOWNLOAD_FROM_FLASH = (uint32_t*)0x40;
+static const volatile uint32_t* ADDR_OTPI_POWER = (uint32_t*)0x4C;
+static const volatile uint32_t* ADDR_OTPI_READ = (uint32_t*)0x50;
+static const volatile uint32_t* ADDR_OTPI_WRITE = (uint32_t*)0x54;
+static const volatile uint32_t* ADDR_OTPI_WRITE_PROTECT = (uint32_t*)0x5C;
 
 typedef void (*download_from_flash_ptr)(uint32_t src_offset, uint32_t dest_addr,
 					uint32_t size,
@@ -55,3 +61,5 @@ void download_from_flash(uint32_t src_offset, uint32_t dest_addr, uint32_t size,
 	((download_from_flash_ptr)*ADDR_DOWNLOAD_FROM_FLASH)(
 		src_offset, dest_addr, size, sign, exe_addr, status);
 }
+
+#pragma GCC diagnostic pop
