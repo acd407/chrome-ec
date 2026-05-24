@@ -12,6 +12,7 @@
 #include "keyboard_backlight.h"
 #include "lid_switch.h"
 #include "rgb_keyboard.h"
+#include "system.h"
 #include "timer.h"
 #include "util.h"
 
@@ -119,12 +120,36 @@ static void keyboard_backlight_init(void)
 }
 
 /*
+ * On sysjump (e.g. RO→RW via `reboot_ec RW`), the chipset is already in S0,
+ * so HOOK_CHIPSET_STARTUP never fires. The BSS is cleared, making kblight.drv
+ * NULL and breaking all subsequent kblight host commands. Re-register here.
+ */
+static void keyboard_backlight_sysjump_init(void)
+{
+	if (!system_jumped_to_this_image())
+		return;
+	if (!chipset_in_state(CHIPSET_STATE_ON))
+		return;
+
+	if (IS_ENABLED(CONFIG_PWM_KBLIGHT))
+		kblight_register(&kblight_pwm);
+	else if (IS_ENABLED(CONFIG_RGB_KEYBOARD))
+		kblight_register(&kblight_rgbkbd);
+
+	board_kblight_init();
+
+	/* Don't reset PWM hardware — it retained its state across the jump */
+	CPRINTS("kblight re-registered after sysjump");
+}
+
+/*
  * Legacy code assumed that the chipset task indicated a system EC and we'd only
  * need to initialize the backlight during start-up. It also assumed that not
  * having a chipset task indicated a KBMCU and we'd want to run during init.
  */
 #if defined(HAS_TASK_CHIPSET) && !defined(CONFIG_KBLIGHT_HOOK_INIT)
 DECLARE_HOOK(HOOK_CHIPSET_STARTUP, keyboard_backlight_init, HOOK_PRIO_DEFAULT);
+DECLARE_HOOK(HOOK_INIT, keyboard_backlight_sysjump_init, HOOK_PRIO_DEFAULT);
 #else
 DECLARE_HOOK(HOOK_INIT, keyboard_backlight_init, HOOK_PRIO_DEFAULT);
 #endif
