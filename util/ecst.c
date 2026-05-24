@@ -9,8 +9,18 @@
  * data used by NPCX ROM code (booter).
  */
 
-#include "compile_time_macros.h"
 #include "ecst.h"
+
+#include "compile_time_macros.h"
+
+/* GCC 14 warns on intentional patterns in this file:
+ * - -Waddress: hdr_args is a stack array, its address is never NULL
+ * - -Wdiscarded-qualifiers: strrchr with const char* returns non-const char*
+ * - -Wstringop-truncation: strncpy truncation warning for known-length buffers
+ */
+#pragma GCC diagnostic ignored "-Waddress"
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#pragma GCC diagnostic ignored "-Wstringop-truncation"
 
 /* Global Variables */
 enum verbose_level g_verbose;
