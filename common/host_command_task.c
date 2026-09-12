@@ -563,8 +563,23 @@ uint16_t host_command_process(struct host_cmd_handler_args *args)
 			rv = cmd->handler(args);
 	}
 
-	if (rv != EC_RES_SUCCESS)
-		CPRINTS("HC 0x%04x err %d", args->command, rv);
+	if (rv != EC_RES_SUCCESS) {
+		if (args->params_size) {
+			char err_str_buf[hex_str_buf_size(args->params_size)];
+
+			snprintf_hex_buffer(err_str_buf, sizeof(err_str_buf),
+					    HEX_BUF(args->params,
+						    args->params_size));
+			CPRINTS("HC 0x%04x.%d err %d params:%s", args->command,
+				args->version, rv, err_str_buf);
+		} else {
+			CPRINTS("HC 0x%04x.%d err %d", args->command,
+				args->version, rv);
+		}
+		if (rv == EC_RES_INVALID_COMMAND)
+			CPRINTS("HC 0x%04x not registered (cmd_size=%d)",
+				args->command, args->params_size);
+	}
 
 	if (hcdebug >= HCDEBUG_PARAMS && args->response_size) {
 		char str_buf[hex_str_buf_size(args->response_size)];
