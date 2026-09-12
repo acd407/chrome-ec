@@ -176,6 +176,9 @@
 #define CONFIG_USB_PD_USB4
 #define CONFIG_USB_PD_DATA_RESET_MSG
 
+/* Record main PD events in a circular buffer */
+#define CONFIG_USB_PD_LOGGING
+
 /* Retimer */
 #define CONFIG_USBC_RETIMER_FW_UPDATE
 
