@@ -114,54 +114,72 @@ Input device name: "cros_ec_buttons"
 
 #### 原理
 
-Chrome EC 有两条通知 AP 的硬件路径：
-
-| 路径 | 机制 | 硬件信号 |
-|------|------|---------|
-| **GPIO 中断** | EC 拉低 `GPIO_EC_PCH_INT_ODL` | EC→PCH 的专用 GPIO 引脚 |
-| **Host event + SCI** | EC 通过 eSPI 虚拟线触发 SCI | eSPI virtual wire (SERIRQ) |
-
-两条路径完全独立，由不同的 AP 硬件模块处理。
-
-GPIO 中断路径在自定义 Linux（非 ChromeOS）上不通，原因是 ACPI GPIO 中断映射配置不完整，AP 的 GPIO 控制器驱动未正确注册该中断。结果是内核的 `cros_ec` 驱动永远不会调用 `EC_CMD_GET_NEXT_EVENT` 来消费 MKBP 事件。EC 启动日志可以确认这一点：
+MrChromebox coreboot 带了一个补丁：
 
 ```
-[4.097459 already in S0]              ← power_chipset_init 确认 AP 在 S0
-[4.151074 mkbp switches: 1]           ← MKBP 事件已产生
-[6.152177 MKBP: The AP is failing to respond despite being powered on.]
-          ↑ EC 明确知道 AP 处于 S0 运行状态，但 AP 仍然没有消费 MKBP 事件
+3d45adc8616  ec/google/chromeec: drop SYNC IRQ for CREC device
 ```
 
-（键盘仍可正常使用，因为键盘走 8042 协议（eSPI PS/2 兼容），不依赖 MKBP 中断。）
+它把 `CREC`（`GOOG0004`）的整个 `_CRS` 方法删掉了。于是 Linux 的
+`cros_ec_lpc` 从 `platform_get_irq_optional()` 拿到 `-ENXIO`，永远不会调用
+`devm_request_threaded_irq()`，结果 MKBP 事件（侧边音量键、电源键、各种 switch）
+全都到不了 input 层。
+
+硬件通路其实是好的：baseboard 已把 `GPP_F17` 配成 APIC 中断
+（`PAD_CFG_GPI_APIC_LOCK(GPP_F17, NONE, LEVEL, INVERT, ...)`），接到 IOxAPIC
+GSI `0x67`（`EC_SYNC_IRQ`）。缺的只是 ACPI 里对它的描述。
+
+（键盘始终正常，是因为它走 8042 协议，不依赖 MKBP 中断。）
 
 #### 修复
 
-不使用 GPIO 中断路径，而是启用 **host event + SCI** 路径作为备选。SCI（System Control Interrupt）通过 eSPI 虚拟线传递，是独立于 GPIO 总线的另一套硬件通路。需要两个改动：
+从内核侧恢复该中断，不改 coreboot、不改 EC 固件：
 
-**Fix 1: `common/mkbp_event.c` — S0 下也发送 host event**
+- Companion 仓库
+  **[cros-ec-sync-irq-dkms](https://github.com/acd407/cros-ec-sync-irq-dkms)**：
+  一个 DKMS 模块，用 `acpi_register_gsi()` 映射 GSI `0x67`，并把内核导出的
+  `cros_ec_irq_thread()` 注册为 threaded handler —— 等价于 ACPI 资源存在时
+  `cros_ec_register()` 自己会做的事。
 
-原代码只在 AP 处于 suspend 状态时才设置 `EC_HOST_EVENT_MKBP`，因为 ChromeOS 下 S0 时该事件不在 SCI mask 中。修复后始终设置，在 S0 下也尝试通过 SCI 通知 AP。
-
-**Fix 2: `board/redrix/board.c` — 设置 SCI mask**
-
-EC 的 NPCX 芯片会检查 SCI mask 来决定是否真的触发 SCI 脉冲。默认 SCI mask 为 0（BSS 初始化），需要显式加入 `EC_HOST_EVENT_MKBP`。此外 SCI mask 会在每次 S3→S0 转换时被清零，因此还需通过 `HOOK_CHIPSET_RESUME` 在唤醒后重新设置。
-
-修复后的事件通路：
+模块加载后，MKBP 传递端到端可用，除桌面环境的常规按键绑定外无需任何用户态配置：
 
 ```
-物理按键按下
-    → EC GPIO 中断 → mkbp_fifo_add()
-    → activate_mkbp_with_events()
-    → host_set_single_event(EC_HOST_EVENT_MKBP)  ← 新增：S0 下也走此路
-    → NPCX eSPI SCI 虚拟线
-    → AP PCH 接收 SCI → ACPI SCI handler
-    → cros_ec 驱动 → EC_CMD_GET_NEXT_EVENT
-    → cros_ec_buttons → input subsystem → evtest ✅
+EC 拉低 GPIO_EC_PCH_INT_ODL → GPP_F17 → GSI 0x67 → IRQ (chromeos-ec)
+  → cros_ec_irq_thread() → EC_CMD_GET_NEXT_EVENT
+  → blocking_notifier_call_chain(event_notifier)
+  → cros_ec_keyb_work() → KEY_VOLUMEUP/DOWN/POWER → input 子系统
 ```
 
-修复提交：
-- `redrix/board: enable SCI delivery for MKBP host events`
+#### 为什么撤销了先前的 EC 侧 workaround
+
+在真正定位到根因之前，有两处 EC 侧改动试图绕开"未被注册的 GPIO 中断"，改走
+eSPI SCI / host-event 通路来传递 MKBP 事件：
+
 - `mkbp_event: send host event in S0 as fallback notification`
+- `redrix/board: enable SCI delivery for MKBP host events`
+
+这两处现在都已撤销，原因有二：
+
+1. **已无必要。** 缺的从来不是 EC 的通知路径，而是 Linux 根本没注册 IRQ handler
+   —— 因为 coreboot 删掉了 `CREC._CRS`。`cros-ec-sync-irq-dkms` 把正规的
+   GPIO/APIC 中断恢复后，标准路径即可工作，SCI 兜底成了死代码。
+
+2. **而且有害。** 在 S0 强发 `EC_HOST_EVENT_MKBP` 违背了上游守卫
+
+   ```c
+   if (active && chipset_in_state(CHIPSET_STATE_ANY_SUSPEND))
+       host_set_single_event(EC_HOST_EVENT_MKBP);
+   ```
+
+   上游注释明确警告：在 S0 设置的 MKBP host event 可能残留，导致下一次 suspend
+   时提前唤醒 AP。而 SCI mask 的改动只是为这条已不再使用的兜底路径服务。
+
+撤销后 EC 固件行为与上游保持一致，也避免了 suspend/wake 回归。PD 那条
+（`redrix/board: undef CONFIG_USB_PD_REQUIRE_AP_MODE_ENTRY`）与 MKBP 无关，保留。
+
+提交：
+- `Revert "mkbp_event: send host event in S0 as fallback notification"`
+- `Revert "redrix/board: enable SCI delivery for MKBP host events"`
 
 ### USB PD AP Mode Entry（USB4 / 雷电自动协商）
 
