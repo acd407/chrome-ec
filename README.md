@@ -110,58 +110,85 @@ Input device name: "cros_ec_buttons"
   Event code 116 (KEY_POWER)
 ```
 
-But pressing the buttons produces no events in `evtest`. Regular `ectool` commands (`ectool version`, `ectool flashread`, etc.) work fine.
+But pressing the buttons produces no events in `evtest`. Regular `ectool` commands (`ectool version`, `ectool flashread`, etc.) and `ectool mkbpget buttons` work fine.
 
 #### Root Cause
 
-The Chrome EC has two independent hardware paths for notifying the AP:
-
-| Path | Mechanism | Hardware Signal |
-|------|----------|----------------|
-| **GPIO interrupt** | EC pulls `GPIO_EC_PCH_INT_ODL` low | Dedicated EC→PCH GPIO pin |
-| **Host event + SCI** | EC triggers SCI via eSPI virtual wire | eSPI virtual wire (SERIRQ) |
-
-These paths are completely independent and handled by different AP hardware blocks.
-
-The GPIO interrupt path does not work on custom Linux (non-ChromeOS) because the ACPI GPIO interrupt mapping is incomplete — the AP's GPIO controller driver does not correctly register the interrupt. As a result, the kernel's `cros_ec` driver never calls `EC_CMD_GET_NEXT_EVENT` to consume MKBP events. This is confirmed by the EC boot log:
+MrChromebox coreboot carries:
 
 ```
-[4.097459 already in S0]              ← power_chipset_init confirms AP is in S0
-[4.151074 mkbp switches: 1]           ← MKBP event generated
-[6.152177 MKBP: The AP is failing to respond despite being powered on.]
-          ↑ EC explicitly knows the AP is in S0, yet the AP still fails to consume events
+3d45adc8616  ec/google/chromeec: drop SYNC IRQ for CREC device
 ```
 
-(The keyboard continues to work because it uses the 8042 protocol (eSPI PS/2 compatibility) and does not depend on MKBP interrupts.)
+which removed the entire `CREC._CRS` method. Linux' `cros_ec_lpc` therefore gets
+`-ENXIO` from `platform_get_irq_optional()` and never calls
+`devm_request_threaded_irq()`, so MKBP events (side volume buttons, power,
+switches) never reach the input stack.
+
+The hardware path is fine: the baseboard configures `GPP_F17` as an APIC interrupt
+(`PAD_CFG_GPI_APIC_LOCK(GPP_F17, NONE, LEVEL, INVERT, ...)`), routed to IOxAPIC
+GSI `0x67` (`EC_SYNC_IRQ`). Only the ACPI description is missing.
+
+(The keyboard keeps working because it uses the 8042 protocol and does not depend
+on MKBP interrupts.)
 
 #### Fix
 
-Instead of the GPIO interrupt path, enable the **host event + SCI** path as a fallback. SCI (System Control Interrupt) is delivered over the eSPI virtual wire, a separate hardware channel independent of the GPIO bus. Two changes are required:
+The interrupt is restored from the kernel side, without touching coreboot or the
+EC firmware:
 
-**Fix 1: `common/mkbp_event.c` — always send host event even in S0**
+- Companion repo
+  **[cros-ec-sync-irq-dkms](https://github.com/acd407/cros-ec-sync-irq-dkms)**:
+  a DKMS module that maps GSI `0x67` with `acpi_register_gsi()` and registers the
+  kernel's exported `cros_ec_irq_thread()` as the threaded handler — replicating
+  what `cros_ec_register()` does when the ACPI resource exists.
 
-The original code only set `EC_HOST_EVENT_MKBP` when the AP was in suspend state, since on ChromeOS this event is not in the SCI mask during S0. The fix always sets the host event, attempting SCI delivery in S0 as well.
-
-**Fix 2: `board/redrix/board.c` — configure the SCI mask**
-
-The NPCX chip checks the SCI mask to decide whether to actually generate an SCI pulse. The default SCI mask is 0 (BSS initialization), so `EC_HOST_EVENT_MKBP` must be explicitly added. Additionally, the SCI mask is cleared during every S3→S0 transition by `lpc_s3_resume_clear_masks()`, so it must be restored via the `HOOK_CHIPSET_RESUME` hook.
-
-Post-fix event path:
+Once the module is loaded, MKBP delivery works end-to-end with no userspace
+configuration beyond the normal desktop key bindings:
 
 ```
-Physical button press
-    → EC GPIO interrupt → mkbp_fifo_add()
-    → activate_mkbp_with_events()
-    → host_set_single_event(EC_HOST_EVENT_MKBP)  ← New: also in S0
-    → NPCX eSPI SCI virtual wire
-    → AP PCH receives SCI → ACPI SCI handler
-    → cros_ec driver → EC_CMD_GET_NEXT_EVENT
-    → cros_ec_buttons → input subsystem → evtest ✅
+EC drives GPIO_EC_PCH_INT_ODL → GPP_F17 → GSI 0x67 → IRQ (chromeos-ec)
+  → cros_ec_irq_thread() → EC_CMD_GET_NEXT_EVENT
+  → blocking_notifier_call_chain(event_notifier)
+  → cros_ec_keyb_work() → KEY_VOLUMEUP/DOWN/POWER → input subsystem
 ```
+
+#### Why the earlier EC-side workarounds were reverted
+
+Before the real root cause was identified, two EC-side changes tried to deliver
+MKBP events around the unregistered GPIO interrupt, over the eSPI SCI /
+host-event path:
+
+- `mkbp_event: send host event in S0 as fallback notification`
+- `redrix/board: enable SCI delivery for MKBP host events`
+
+Both are now reverted, for two reasons:
+
+1. **They are unnecessary.** The missing piece was never the EC notification
+   path — it was that Linux never registered an IRQ handler at all, because
+   coreboot dropped `CREC._CRS`. With `cros-ec-sync-irq-dkms` restoring the
+   canonical GPIO/APIC interrupt, the standard path works and the SCI fallback
+   becomes dead code.
+
+2. **They are harmful.** Forcing `EC_HOST_EVENT_MKBP` in S0 contradicts the
+   upstream guard
+
+   ```c
+   if (active && chipset_in_state(CHIPSET_STATE_ANY_SUSPEND))
+       host_set_single_event(EC_HOST_EVENT_MKBP);
+   ```
+
+   whose comment warns that an MKBP host event set in S0 can linger and
+   prematurely wake the AP on the next suspend. The SCI-mask change only exists
+   to support that fallback, which is no longer used.
+
+Reverting them keeps the EC firmware aligned with upstream behaviour and avoids
+the suspend/wake regression. The PD workaround (`redrix/board: undef
+CONFIG_USB_PD_REQUIRE_AP_MODE_ENTRY`) is unrelated to MKBP and is kept.
 
 Commits:
-- `redrix/board: enable SCI delivery for MKBP host events`
-- `mkbp_event: send host event in S0 as fallback notification`
+- `Revert "mkbp_event: send host event in S0 as fallback notification"`
+- `Revert "redrix/board: enable SCI delivery for MKBP host events"`
 
 ### USB PD AP Mode Entry (USB4/Thunderbolt Auto-Negotiation)
 
