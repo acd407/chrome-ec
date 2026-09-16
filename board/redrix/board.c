@@ -10,7 +10,6 @@
 #include "charger.h"
 #include "common.h"
 #include "compile_time_macros.h"
-#include "ec_commands.h"
 #include "console.h"
 #include "driver/accelgyro_lsm6dsm.h"
 #include "driver/als_tcs3400.h"
@@ -19,9 +18,6 @@
 #include "gpio_signal.h"
 #include "hooks.h"
 #include "lid_switch.h"
-#ifdef CONFIG_HOSTCMD_X86
-#include "lpc.h"
-#endif
 #include "peripheral_charger.h"
 #include "power.h"
 #include "power_button.h"
@@ -95,25 +91,6 @@ static void board_chipset_suspend(void)
 	gpio_set_level(GPIO_EC_KB_BL_EN, 0);
 }
 DECLARE_HOOK(HOOK_CHIPSET_SUSPEND, board_chipset_suspend, HOOK_PRIO_DEFAULT);
-
-/*
- * On custom Linux (non-ChromeOS), the AP may not respond to the GPIO-based
- * MKBP interrupt (EC_PCH_INT_ODL).  As a fallback, enable SCI delivery for
- * MKBP host events so the eSPI virtual wire path can notify the AP instead.
- * This mask is cleared by lpc_s3_resume_clear_masks() on S3→S0 transition,
- * so re-apply it on chipset resume too.
- */
-static void board_init_mkbp_sci(void)
-{
-#ifdef CONFIG_HOSTCMD_X86
-	lpc_set_host_event_mask(
-		LPC_HOST_EVENT_SCI,
-		lpc_get_host_event_mask(LPC_HOST_EVENT_SCI) |
-			BIT(EC_HOST_EVENT_MKBP));
-#endif
-}
-DECLARE_HOOK(HOOK_INIT, board_init_mkbp_sci, HOOK_PRIO_DEFAULT);
-DECLARE_HOOK(HOOK_CHIPSET_RESUME, board_init_mkbp_sci, HOOK_PRIO_LAST);
 
 enum battery_present battery_hw_present(void)
 {
