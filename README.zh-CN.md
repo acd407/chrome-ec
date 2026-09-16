@@ -1,5 +1,7 @@
 # Redrix EC 固件
 
+[English](README.md) | **简体中文**
+
 为 HP Elite Dragonfly Chromebook (redrix) 定制的 Chromium OS Embedded Controller 固件。
 
 ## 硬件平台
@@ -132,6 +134,10 @@ GSI `0x67`（`EC_SYNC_IRQ`）。缺的只是 ACPI 里对它的描述。
 （键盘始终正常，是因为它走 8042 协议，不依赖 MKBP 中断。）
 
 #### 修复
+
+下面这个思路最早来自
+[MrChromebox/firmware#622（评论）](https://github.com/MrChromebox/firmware/issues/622#issuecomment-5659239076)：
+中断在硬件上依然存在，只是需要从内核侧把它注册回来。
 
 从内核侧恢复该中断，不改 coreboot、不改 EC 固件：
 

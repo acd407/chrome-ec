@@ -1,5 +1,7 @@
 # Redrix EC Firmware
 
+**English** | [简体中文](README.zh-CN.md)
+
 Custom Chromium OS Embedded Controller firmware for the HP Elite Dragonfly Chromebook (redrix).
 
 ## Hardware Platform
@@ -133,6 +135,11 @@ GSI `0x67` (`EC_SYNC_IRQ`). Only the ACPI description is missing.
 on MKBP interrupts.)
 
 #### Fix
+
+The approach below was first worked out in
+[MrChromebox/firmware#622 (comment)](https://github.com/MrChromebox/firmware/issues/622#issuecomment-5659239076):
+the interrupt still exists in hardware, it simply has to be registered from the
+kernel side.
 
 The interrupt is restored from the kernel side, without touching coreboot or the
 EC firmware:
