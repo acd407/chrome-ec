@@ -199,6 +199,22 @@ eSPI SCI / host-event 通路来传递 MKBP 事件：
 
 取消该配置项 (`redrix/board: undef CONFIG_USB_PD_REQUIRE_AP_MODE_ENTRY`)。之后 EC 不再等待 AP 指令，会自动进入端口双方都支持的最优模式（USB4 > TBT > DP）。
 
+#### 已知局限：host-to-host 还需内核补丁
+
+以上修复让 EC 侧能自主协商，足以应付「主机 ↔ USB4/TBT 外设」（如显卡坞）。
+但两台这样的机器**直连**（host ↔ host）时，PD 协商成功后链路依旧起不来：
+`usb4_port*/link` 恒为 `none`。
+
+原因是内核 `cros_ec_typec.c` 只在 `ap_driven_altmode`（即 EC 报告了
+`EC_FEATURE_TYPEC_REQUIRE_AP_MODE_ENTRY`）时才注册 TBT alt mode。
+EC 自主后该条件为假，`port_altmode[CROS_EC_ALTMODE_TBT]` 为 `NULL`，
+`cros_typec_enable_tbt()` 于是把 SoC 侧 Type-C mux 打成 SAFE_MODE。
+
+解决办法是内核侧小补丁（无条件注册 + `mode_selection = true`，
+不影响 USB4/DP 路径），已打包为 DKMS：
+
+<https://github.com/acd407/cros-ec-typec-dkms>
+
 ## 编译
 
 需要 arm-none-eabi 交叉编译工具链。
