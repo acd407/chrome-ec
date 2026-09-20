@@ -36,6 +36,14 @@
 
 /* USB Type C and USB PD defines */
 #define CONFIG_USB_PD_REQUIRE_AP_MODE_ENTRY
+/*
+ * The AP runs custom Linux, not ChromeOS, so it never issues the
+ * ChromeOS-specific PD mode-entry host command (EC_CMD_TYPEC_CONTROL).
+ * Clear this so the EC manages alt-mode entry itself and picks the best
+ * supported mode (USB4 > TBT > DP) instead of waiting for the AP forever.
+ * Same fix as board/redrix/board.h.
+ */
+#undef CONFIG_USB_PD_REQUIRE_AP_MODE_ENTRY
 
 #undef CONFIG_USB_PD_TCPM_NCT38XX
 #define CONFIG_USB_PD_TCPM_RT1715
@@ -120,6 +128,8 @@
 
 /* Enabling USB4 mode */
 #define CONFIG_USB_PD_USB4
+/* Mandatory for USB4 and optional for USB 3.2; board/redrix sets it too. */
+#define CONFIG_USB_PD_DATA_RESET_MSG
 
 /* Retimer */
 #define CONFIG_USBC_RETIMER_FW_UPDATE
