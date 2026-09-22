@@ -34,24 +34,42 @@ void send_aux_data_to_device(uint8_t data)
 		ps2_transmit_byte(PRIMUS_PS2_CH, data);
 }
 
-static void board_init(void)
-{
-	ps2_enable_channel(PRIMUS_PS2_CH, 1, send_aux_data_to_host_interrupt);
-}
-DECLARE_HOOK(HOOK_INIT, board_init, HOOK_PRIO_DEFAULT);
-
 /*
  * Goodix touchpad AVDD need to pull low to 0V when poweroff.
  * Setting PS2 module in GPIO.inc will let AVDD have 0.9V offset.
  * So we need to enable PS2 module later than PLTRST# to avoid the 0.9V
- * offset.
+ * offset.  SLP_SUS# is deasserted (reads high) once the S5 rails are up,
+ * so it is safe to route the PS/2 module onto the TPAD pins then.
  */
+static bool ps2_can_be_muxed(void)
+{
+	return gpio_get_level(GPIO_SLP_SUS_L);
+}
+
 static void enable_ps2(void)
 {
+	if (!ps2_can_be_muxed())
+		return;
+
 	gpio_set_alternate_function(GPIO_PORT_6, BIT(2) | BIT(3),
 				    GPIO_ALT_FUNC_DEFAULT);
 }
 DECLARE_DEFERRED(enable_ps2);
+
+static void board_init(void)
+{
+	ps2_enable_channel(PRIMUS_PS2_CH, 1, send_aux_data_to_host_interrupt);
+
+	/*
+	 * gpio_pre_init() clears the PS/2 alternate function on every EC
+	 * reset (cold boot, reboot_ec/sysjump, watchdog, exception reset).
+	 * If the AP is already up at this point (e.g. reboot_ec while in
+	 * S0/S3), no HOOK_CHIPSET_RESET will follow, so re-apply the mux now
+	 * or the aux (TrackPoint) channel stays dead forever.
+	 */
+	enable_ps2();
+}
+DECLARE_HOOK(HOOK_INIT, board_init, HOOK_PRIO_DEFAULT);
 
 static void disable_ps2(void)
 {
@@ -63,6 +81,21 @@ static void disable_ps2(void)
 	hook_call_deferred(&enable_ps2_data, 2 * SECOND);
 }
 DECLARE_HOOK(HOOK_CHIPSET_RESET, disable_ps2, HOOK_PRIO_DEFAULT);
+
+/*
+ * Re-apply the mux whenever the platform comes up (S5->S3 or S3->S0).
+ * Needed for cold boots where the AP was still off in board_init(),
+ * and as a safety net across suspend/resume.  PRE_DEFAULT ensures the
+ * pins are muxed before ps2_resume() talks to the trackpoint.
+ */
+static void ps2_enable_on_resume(void)
+{
+	enable_ps2();
+}
+DECLARE_HOOK(HOOK_CHIPSET_STARTUP, ps2_enable_on_resume,
+	     HOOK_PRIO_PRE_DEFAULT);
+DECLARE_HOOK(HOOK_CHIPSET_RESUME, ps2_enable_on_resume,
+	     HOOK_PRIO_PRE_DEFAULT);
 
 static void ps2_transmit(uint8_t cmd)
 {
