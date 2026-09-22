@@ -139,13 +139,6 @@ sha256sum build/primus/RW/ec.RW.bin check.bin   # 必须一致
 sudo ectool reboot_ec cold
 ```
 
-**注意**：`reboot_ec` 会触发**整机重启**（EC 控制 AP 电源序列），远程 SSH
-会断开约 60~90 秒。远程操作时务必用 `nohup` 延迟执行：
-
-```bash
-nohup bash -c 'sleep 3; ~/tmpsudo ~/ectool reboot_ec cold' > ~/reboot.log 2>&1 &
-```
-
 ### 验证刷写结果
 
 ```bash
