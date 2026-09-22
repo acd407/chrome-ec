@@ -111,12 +111,6 @@ sha256sum build/primus/RW/ec.RW.bin check.bin   # must match
 sudo ectool reboot_ec cold
 ```
 
-**Warning**: `reboot_ec` triggers a **full system reboot** (the EC drives the AP power sequence), so a remote SSH session drops for roughly 60–90 seconds. When operating remotely, defer it with `nohup`:
-
-```bash
-nohup bash -c 'sleep 3; ~/tmpsudo ~/ectool reboot_ec cold' > ~/reboot.log 2>&1 &
-```
-
 ### Verifying the Flash
 
 ```bash
